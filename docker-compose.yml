@@ -1,0 +1,24 @@
+version: '3.9'
+
+services:
+  mealie-bot:
+    build: .
+    container_name: mealie-discord-bot
+    env_file:
+      - .env
+    volumes:
+      - ./logs:/app/logs
+    restart: unless-stopped
+    depends_on:
+      - redis  # Optional: for future caching
+
+  redis:
+    image: redis:7-alpine
+    container_name: mealie-bot-redis
+    restart: unless-stopped
+    command: redis-server --appendonly yes
+    volumes:
+      - redis_data:/data
+
+volumes:
+  redis_data:
