@@ -71,6 +71,37 @@ docker-compose up -d --build
 docker-compose logs -f
 ```
 
+### 4. Run as Systemd Service (Alternative)
+
+For production deployments or LXC containers, you can run the bot as a systemd service:
+
+```bash
+# Run the installation script
+sudo ./install-service.sh
+```
+
+The installer offers two deployment options:
+- **Native Python**: Runs directly without Docker (recommended for LXC containers)
+- **Docker Compose**: Manages Docker containers via systemd
+
+After installation, manage the service with:
+
+```bash
+# Start/stop/restart
+sudo systemctl start mealie-discord-bot
+sudo systemctl stop mealie-discord-bot
+sudo systemctl restart mealie-discord-bot
+
+# View status and logs
+sudo systemctl status mealie-discord-bot
+sudo journalctl -u mealie-discord-bot -f
+
+# Enable autostart at boot
+sudo systemctl enable mealie-discord-bot
+```
+
+For detailed systemd documentation, see [systemd/README.md](systemd/README.md).
+
 ## ⚙️ Configuration
 
 ### Discord Bot Setup
@@ -138,9 +169,14 @@ mealie-discord-import/
 │       └── models.py        # Data models
 ├── config/
 │   └── settings.py          # Configuration management
+├── systemd/
+│   ├── mealie-discord-bot.service        # Systemd service (native)
+│   ├── mealie-discord-bot-docker.service # Systemd service (docker)
+│   └── README.md                         # Systemd documentation
 ├── tests/                   # Unit tests
 ├── docker-compose.yml       # Docker services
 ├── Dockerfile              # Container definition
+├── install-service.sh      # Systemd service installer
 ├── requirements.txt        # Python dependencies
 ├── .env.example           # Example environment variables (template)
 └── .env                   # Environment variables (gitignored, create from .env.example)
@@ -286,6 +322,7 @@ If you encounter issues or have questions:
 - [x] AI fallback with OpenAI
 - [x] Docker deployment
 - [x] Slash commands
+- [x] Systemd service support
 - [ ] Multiple AI providers support
 - [ ] Recipe image processing
 - [ ] Bulk recipe import

@@ -1,0 +1,28 @@
+[Unit]
+Description=Mealie Discord Import Bot (Docker Compose)
+Requires=docker.service
+After=docker.service network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=true
+WorkingDirectory=/opt/mealie-discord-bot
+
+# Start containers
+ExecStart=/usr/bin/docker-compose up -d
+
+# Stop containers gracefully
+ExecStop=/usr/bin/docker-compose down
+
+# Restart policy
+Restart=on-failure
+RestartSec=10
+
+# Logging
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=mealie-discord-bot-docker
+
+[Install]
+WantedBy=multi-user.target

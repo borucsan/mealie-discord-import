@@ -1,0 +1,35 @@
+[Unit]
+Description=Mealie Discord Import Bot (Native Python)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=mealie-bot
+Group=mealie-bot
+WorkingDirectory=/opt/mealie-discord-bot
+
+# Environment
+EnvironmentFile=/etc/mealie-discord-bot/.env
+
+# Virtual environment Python
+ExecStart=/opt/mealie-discord-bot/venv/bin/python /opt/mealie-discord-bot/src/main.py
+
+# Restart policy
+Restart=always
+RestartSec=10
+
+# Security hardening
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/var/log/mealie-discord-bot
+
+# Logging
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=mealie-discord-bot
+
+[Install]
+WantedBy=multi-user.target
