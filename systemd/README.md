@@ -102,7 +102,10 @@ sudo chown -R mealie-bot:mealie-bot /etc/mealie-discord-bot
 sudo chown -R mealie-bot:mealie-bot /var/log/mealie-discord-bot
 ```
 
-7. Install service:
+7. Verify PYTHONPATH in service file:
+The service file should include `Environment="PYTHONPATH=/opt/mealie-discord-bot"` to ensure Python can find the config module.
+
+8. Install service:
 ```bash
 sudo cp systemd/mealie-discord-bot.service /etc/systemd/system/
 sudo systemctl daemon-reload

@@ -11,6 +11,7 @@ WorkingDirectory=/opt/mealie-discord-bot
 
 # Environment
 EnvironmentFile=/etc/mealie-discord-bot/.env
+Environment="PYTHONPATH=/opt/mealie-discord-bot"
 
 # Virtual environment Python
 ExecStart=/opt/mealie-discord-bot/venv/bin/python /opt/mealie-discord-bot/src/main.py
