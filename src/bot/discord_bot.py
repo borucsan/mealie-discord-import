@@ -92,9 +92,20 @@ class MealieBot(commands.Bot):
 
     async def _handle_save_recipe_slash(self, interaction: discord.Interaction, url: str):
         """Handle recipe saving for slash commands with AI fallback"""
+        # Track if we've deferred the interaction
+        interaction_deferred = False
+        
         try:
-            # Send processing message
-            await interaction.response.defer()  # Acknowledge the interaction
+            # Send processing message - defer the interaction first
+            try:
+                await interaction.response.defer()  # Acknowledge the interaction
+                interaction_deferred = True
+            except Exception as defer_error:
+                # If defer fails, try to send error response
+                logger.error(f"Failed to defer interaction: {defer_error}")
+                if not interaction.response.is_done():
+                    await interaction.response.send_message("❌ Błąd podczas inicjalizacji. Spróbuj ponownie.")
+                return
 
             # Validate URL
             if not self._is_valid_url(url):
@@ -322,10 +333,22 @@ class MealieBot(commands.Bot):
 
         except Exception as e:
             logger.error(f"Unexpected error in _handle_save_recipe_slash: {e}")
-            if not interaction.response.is_done():
-                await interaction.response.send_message("❌ Wystąpił nieoczekiwany błąd.")
-            else:
-                await interaction.followup.send("❌ Wystąpił nieoczekiwany błąd.")
+            # Always check if response is done (deferred) before using response.send_message
+            # Use followup.send() if response is done, otherwise use response.send_message()
+            try:
+                if interaction.response.is_done():
+                    # Response was deferred, use followup
+                    await interaction.followup.send("❌ Wystąpił nieoczekiwany błąd.")
+                else:
+                    # Response not done yet, can use response.send_message()
+                    await interaction.response.send_message("❌ Wystąpił nieoczekiwany błąd.")
+            except Exception as send_error:
+                logger.error(f"Failed to send error message to Discord: {send_error}")
+                # Last resort: try followup if response failed
+                try:
+                    await interaction.followup.send("❌ Wystąpił nieoczekiwany błąd.")
+                except:
+                    logger.error("Failed to send error message via followup as well")
 
     async def _handle_mealie_info_slash(self, interaction: discord.Interaction):
         """Handle mealie_info command for slash commands"""
