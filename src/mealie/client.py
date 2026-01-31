@@ -568,14 +568,21 @@ class MealieClient:
             async with self.session.get(url, timeout=aiohttp.ClientTimeout(total=30)) as response:
                 if response.status == 200:
                     html = await response.text()
-                    soup = BeautifulSoup(html, 'html.parser')
+                    
+                    # Parse HTML in executor to avoid blocking event loop
+                    loop = asyncio.get_event_loop()
+                    soup = await loop.run_in_executor(None, BeautifulSoup, html, 'html.parser')
 
-                    # Remove script and style elements
-                    for script in soup(["script", "style"]):
-                        script.decompose()
+                    # Remove script and style elements (also run in executor)
+                    def clean_soup(soup_obj):
+                        for script in soup_obj(["script", "style"]):
+                            script.decompose()
+                        return soup_obj
+                    
+                    soup = await loop.run_in_executor(None, clean_soup, soup)
 
-                    # Get text content
-                    text = soup.get_text(separator='\n', strip=True)
+                    # Get text content (run in executor)
+                    text = await loop.run_in_executor(None, soup.get_text, '\n', True)
 
                     # Clean up whitespace
                     lines = [line.strip() for line in text.split('\n') if line.strip()]
