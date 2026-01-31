@@ -1,5 +1,6 @@
 """Discord bot for Mealie recipe import"""
 
+import asyncio
 import logging
 import re
 from typing import Optional
@@ -91,20 +92,32 @@ class MealieBot(commands.Bot):
 
     async def _handle_save_recipe_slash(self, interaction: discord.Interaction, url: str):
         """Handle recipe saving for slash commands with AI fallback"""
+        # Log immediately when command is received
+        logger.info(f"[{interaction.id}] Received save_recipe command from {interaction.user}, deferring...")
+        
         # CRITICAL: Defer IMMEDIATELY - Discord gives only 3 seconds to respond
+        # This MUST be the first operation, before ANY other code
         try:
             await interaction.response.defer()
+            logger.info(f"[{interaction.id}] Successfully deferred interaction")
         except discord.NotFound:
             # Interaction expired (404) - too late to respond
-            logger.error(f"Failed to defer interaction: expired before defer (user: {interaction.user}, url: {url})")
+            logger.error(f"[{interaction.id}] Failed to defer: expired before defer (user: {interaction.user}, url: {url})")
             return
         except discord.HTTPException as e:
             # Other Discord API errors during defer
-            logger.error(f"Failed to defer interaction: {e} (user: {interaction.user}, url: {url})")
+            logger.error(f"[{interaction.id}] Failed to defer: {e} (user: {interaction.user}, url: {url})")
             return
         
-        # Now we can safely do logging and other operations
-        logger.info(f"Slash command 'save_recipe' called by {interaction.user} with URL: {url}")
+        # Defer successful - now process in background to not block event loop
+        logger.info(f"[{interaction.id}] Starting background processing for URL: {url}")
+        
+        # Create background task for processing to keep event loop responsive
+        asyncio.create_task(self._process_recipe_in_background(interaction, url))
+    
+    async def _process_recipe_in_background(self, interaction: discord.Interaction, url: str):
+        """Process recipe in background task to keep event loop responsive"""
+        logger.info(f"[{interaction.id}] Background processing started for {url}")
         
         try:
             # Validate URL
