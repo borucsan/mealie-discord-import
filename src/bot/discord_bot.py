@@ -72,7 +72,8 @@ class MealieBot(commands.Bot):
         @app_commands.describe(url="URL przepisu do zapisania")
         async def save_recipe(interaction: discord.Interaction, url: str):
             """Save a recipe from URL to Mealie"""
-            await self._handle_save_recipe_slash(interaction, url)
+            # Don't await - create task and return immediately to keep command handler responsive
+            asyncio.create_task(self._handle_save_recipe_slash(interaction, url))
 
         @self.tree.command(name="mealie_info", description="Pokaż informacje o bocie Mealie i dostępne komendy")
         async def mealie_info_command(interaction: discord.Interaction):
@@ -109,15 +110,8 @@ class MealieBot(commands.Bot):
             logger.error(f"[{interaction.id}] Failed to defer: {e} (user: {interaction.user}, url: {url})")
             return
         
-        # Defer successful - now process in background to not block event loop
-        logger.info(f"[{interaction.id}] Starting background processing for URL: {url}")
-        
-        # Create background task for processing to keep event loop responsive
-        asyncio.create_task(self._process_recipe_in_background(interaction, url))
-    
-    async def _process_recipe_in_background(self, interaction: discord.Interaction, url: str):
-        """Process recipe in background task to keep event loop responsive"""
-        logger.info(f"[{interaction.id}] Background processing started for {url}")
+        # Defer successful - now process the recipe
+        logger.info(f"[{interaction.id}] Starting recipe processing for URL: {url}")
         
         try:
             # Validate URL
