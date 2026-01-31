@@ -19,6 +19,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 from config.settings import Settings
 from mealie.client import MealieClient
 from mealie.models import RecipeValidationResult
+from utils.retry_queue import RetryQueue, RetryStatus
 
 logger = logging.getLogger(__name__)
 
@@ -44,12 +45,16 @@ class MealieBot(commands.Bot):
 
         self.settings = settings
         self.mealie_client: Optional[MealieClient] = None
+        self.retry_queue = RetryQueue()
 
     async def setup_hook(self):
         """Setup hook called before bot starts"""
         # Initialize Mealie client
         self.mealie_client = MealieClient(self.settings)
         await self.mealie_client.connect()
+
+        # Start retry queue processor
+        await self.retry_queue.start()
 
         # Register commands
         self._register_commands()
@@ -68,6 +73,9 @@ class MealieBot(commands.Bot):
 
     async def close(self):
         """Cleanup when bot closes"""
+        # Stop retry queue
+        await self.retry_queue.stop()
+        
         if self.mealie_client:
             await self.mealie_client.disconnect()
         await super().close()
@@ -81,6 +89,17 @@ class MealieBot(commands.Bot):
             """Save a recipe from URL to Mealie"""
             # Don't await - create task and return immediately to keep command handler responsive
             asyncio.create_task(self._handle_save_recipe_slash(interaction, url))
+
+        @self.tree.command(name="import_bulk", description="Importuj wiele przepisów naraz (oddziel URLe przecinkami)")
+        @app_commands.describe(urls="URLe przepisów oddzielone przecinkami lub spacjami")
+        async def import_bulk(interaction: discord.Interaction, urls: str):
+            """Import multiple recipes at once"""
+            asyncio.create_task(self._handle_bulk_import(interaction, urls))
+
+        @self.tree.command(name="import_status", description="Sprawdź status importów w kolejce")
+        async def import_status(interaction: discord.Interaction):
+            """Check status of imports in retry queue"""
+            asyncio.create_task(self._handle_import_status(interaction))
 
         @self.tree.command(name="mealie_info", description="Pokaż informacje o bocie Mealie i dostępne komendy")
         async def mealie_info_command(interaction: discord.Interaction):
@@ -113,7 +132,7 @@ class MealieBot(commands.Bot):
         async def on_resumed():
             logger.info("Bot resumed Gateway session")
 
-    async def _handle_save_recipe_slash(self, interaction: discord.Interaction, url: str):
+    async def _handle_save_recipe_slash(self, interaction: discord.Interaction, url: str, is_retry: bool = False, retry_task_id: Optional[str] = None):
         """Handle recipe saving for slash commands with AI fallback"""
         # Log immediately when command is received
         logger.info(f"[{interaction.id}] Received save_recipe command from {interaction.user}, deferring...")
@@ -124,12 +143,38 @@ class MealieBot(commands.Bot):
             await interaction.response.defer()
             logger.info(f"[{interaction.id}] Successfully deferred interaction")
         except discord.NotFound:
-            # Interaction expired (404) - too late to respond
-            logger.error(f"[{interaction.id}] Failed to defer: expired before defer (user: {interaction.user}, url: {url})")
+            # Interaction expired (404) - add to retry queue if not already retrying
+            if not is_retry:
+                task = self.retry_queue.add_task(
+                    task_id=f"recipe_{interaction.id}",
+                    user_id=interaction.user.id,
+                    url=url
+                )
+                logger.warning(f"[{interaction.id}] Interaction expired - added to retry queue (task: {task.task_id})")
+                
+                # Try to send DM to user
+                try:
+                    await interaction.user.send(
+                        f"⏰ **Przepis dodany do kolejki retry**\n"
+                        f"URL: {url}\n"
+                        f"Discord nie dostarczył komendy na czas. Spróbuję ponownie za 5 minut.\n"
+                        f"Status: `/import_status`"
+                    )
+                except:
+                    logger.warning(f"Could not send DM to user {interaction.user.id}")
+            else:
+                logger.error(f"[{interaction.id}] Retry attempt also expired for task {retry_task_id}")
             return
         except discord.HTTPException as e:
             # Other Discord API errors during defer
             logger.error(f"[{interaction.id}] Failed to defer: {e} (user: {interaction.user}, url: {url})")
+            if not is_retry:
+                task = self.retry_queue.add_task(
+                    task_id=f"recipe_{interaction.id}",
+                    user_id=interaction.user.id,
+                    url=url
+                )
+                logger.warning(f"[{interaction.id}] Added to retry queue due to error (task: {task.task_id})")
             return
         
         # Defer successful - now process the recipe
@@ -563,3 +608,128 @@ Przepisy są automatycznie tagowane jako "Discord Import" i "Verify" do ręczneg
             await ctx_or_message.send(embed=embed)
         else:
             await ctx_or_message.channel.send(embed=embed)
+    
+    async def _handle_bulk_import(self, interaction: discord.Interaction, urls_string: str):
+        """Handle bulk recipe import"""
+        try:
+            await interaction.response.defer()
+        except:
+            logger.error(f"Failed to defer bulk import interaction for user {interaction.user}")
+            return
+        
+        # Parse URLs (split by comma, space, or newline)
+        import re
+        urls = [url.strip() for url in re.split(r'[,\s\n]+', urls_string) if url.strip()]
+        
+        if not urls:
+            await interaction.followup.send("❌ Nie podano żadnych URL!")
+            return
+        
+        if len(urls) > 10:
+            await interaction.followup.send("❌ Maksymalnie 10 przepisów na raz!")
+            return
+        
+        # Send initial status
+        embed = discord.Embed(
+            title="📦 Import zbiorczy rozpoczęty",
+            description=f"Przetwarzam {len(urls)} przepisów...",
+            color=discord.Color.blue()
+        )
+        await interaction.followup.send(embed=embed)
+        
+        # Process each URL
+        success_count = 0
+        failed_urls = []
+        
+        for i, url in enumerate(urls, 1):
+            try:
+                logger.info(f"Bulk import: Processing {i}/{len(urls)}: {url}")
+                recipe_data = await self.mealie_client.create_recipe_from_url(url)
+                
+                if recipe_data.get('status') == 'created':
+                    success_count += 1
+                    logger.info(f"Bulk import: Successfully added recipe {i}/{len(urls)}")
+                else:
+                    failed_urls.append(url)
+                    logger.warning(f"Bulk import: Failed to add recipe {i}/{len(urls)}: {url}")
+                    
+            except Exception as e:
+                logger.error(f"Bulk import: Error processing {url}: {e}")
+                failed_urls.append(url)
+            
+            # Small delay between recipes to avoid overwhelming Mealie
+            if i < len(urls):
+                await asyncio.sleep(2)
+        
+        # Send final status
+        result_embed = discord.Embed(
+            title="✅ Import zbiorczy zakończony",
+            color=discord.Color.green() if not failed_urls else discord.Color.orange()
+        )
+        result_embed.add_field(
+            name="Pomyślnie dodane",
+            value=f"{success_count}/{len(urls)}",
+            inline=True
+        )
+        
+        if failed_urls:
+            result_embed.add_field(
+                name="Nieudane",
+                value=f"{len(failed_urls)}/{len(urls)}",
+                inline=True
+            )
+            failed_list = "\n".join([f"• {url[:50]}..." if len(url) > 50 else f"• {url}" for url in failed_urls[:5]])
+            if len(failed_urls) > 5:
+                failed_list += f"\n...i {len(failed_urls) - 5} więcej"
+            result_embed.add_field(
+                name="Nieudane URL",
+                value=failed_list,
+                inline=False
+            )
+        
+        await interaction.followup.send(embed=result_embed)
+    
+    async def _handle_import_status(self, interaction: discord.Interaction):
+        """Show retry queue status for user"""
+        try:
+            await interaction.response.defer()
+        except:
+            return
+        
+        tasks = self.retry_queue.get_user_tasks(interaction.user.id)
+        
+        if not tasks:
+            embed = discord.Embed(
+                title="📋 Status kolejki",
+                description="Nie masz żadnych przepisów w kolejce retry.",
+                color=discord.Color.blue()
+            )
+            await interaction.followup.send(embed=embed)
+            return
+        
+        embed = discord.Embed(
+            title="📋 Twoje przepisy w kolejce",
+            description=f"Masz {len(tasks)} przepisów w kolejce retry:",
+            color=discord.Color.orange()
+        )
+        
+        for task in tasks[:10]:  # Show max 10
+            status_emoji = {
+                RetryStatus.PENDING: "⏳",
+                RetryStatus.RETRYING: "🔄",
+                RetryStatus.SUCCESS: "✅",
+                RetryStatus.FAILED: "❌"
+            }.get(task.status, "❓")
+            
+            next_retry_str = task.next_retry.strftime("%H:%M") if task.status == RetryStatus.PENDING else "N/A"
+            
+            embed.add_field(
+                name=f"{status_emoji} {task.url[:40]}...",
+                value=f"Próba: {task.attempt}/{task.max_attempts} | Następna: {next_retry_str}",
+                inline=False
+            )
+        
+        if len(tasks) > 10:
+            embed.set_footer(text=f"... i {len(tasks) - 10} więcej. Pokazano tylko pierwsze 10.")
+        
+        await interaction.followup.send(embed=embed)
