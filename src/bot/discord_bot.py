@@ -71,7 +71,6 @@ class MealieBot(commands.Bot):
         @app_commands.describe(url="URL przepisu do zapisania")
         async def save_recipe(interaction: discord.Interaction, url: str):
             """Save a recipe from URL to Mealie"""
-            logger.info(f"Slash command 'save_recipe' called by {interaction.user} with URL: {url}")
             await self._handle_save_recipe_slash(interaction, url)
 
         @self.tree.command(name="mealie_info", description="Pokaż informacje o bocie Mealie i dostępne komendy")
@@ -92,21 +91,22 @@ class MealieBot(commands.Bot):
 
     async def _handle_save_recipe_slash(self, interaction: discord.Interaction, url: str):
         """Handle recipe saving for slash commands with AI fallback"""
-        # Track if we've deferred the interaction
-        interaction_deferred = False
+        # CRITICAL: Defer IMMEDIATELY - Discord gives only 3 seconds to respond
+        try:
+            await interaction.response.defer()
+        except discord.NotFound:
+            # Interaction expired (404) - too late to respond
+            logger.error(f"Failed to defer interaction: expired before defer (user: {interaction.user}, url: {url})")
+            return
+        except discord.HTTPException as e:
+            # Other Discord API errors during defer
+            logger.error(f"Failed to defer interaction: {e} (user: {interaction.user}, url: {url})")
+            return
+        
+        # Now we can safely do logging and other operations
+        logger.info(f"Slash command 'save_recipe' called by {interaction.user} with URL: {url}")
         
         try:
-            # Send processing message - defer the interaction first
-            try:
-                await interaction.response.defer()  # Acknowledge the interaction
-                interaction_deferred = True
-            except Exception as defer_error:
-                # If defer fails, try to send error response
-                logger.error(f"Failed to defer interaction: {defer_error}")
-                if not interaction.response.is_done():
-                    await interaction.response.send_message("❌ Błąd podczas inicjalizacji. Spróbuj ponownie.")
-                return
-
             # Validate URL
             if not self._is_valid_url(url):
                 await interaction.followup.send(
@@ -333,22 +333,12 @@ class MealieBot(commands.Bot):
 
         except Exception as e:
             logger.error(f"Unexpected error in _handle_save_recipe_slash: {e}")
-            # Always check if response is done (deferred) before using response.send_message
-            # Use followup.send() if response is done, otherwise use response.send_message()
+            # At this point interaction is already deferred, so always use followup
             try:
-                if interaction.response.is_done():
-                    # Response was deferred, use followup
-                    await interaction.followup.send("❌ Wystąpił nieoczekiwany błąd.")
-                else:
-                    # Response not done yet, can use response.send_message()
-                    await interaction.response.send_message("❌ Wystąpił nieoczekiwany błąd.")
-            except Exception as send_error:
+                await interaction.followup.send("❌ Wystąpił nieoczekiwany błąd.")
+            except (discord.NotFound, discord.HTTPException) as send_error:
+                # Interaction expired or Discord API error
                 logger.error(f"Failed to send error message to Discord: {send_error}")
-                # Last resort: try followup if response failed
-                try:
-                    await interaction.followup.send("❌ Wystąpił nieoczekiwany błąd.")
-                except:
-                    logger.error("Failed to send error message via followup as well")
 
     async def _handle_mealie_info_slash(self, interaction: discord.Interaction):
         """Handle mealie_info command for slash commands"""
