@@ -35,7 +35,11 @@ class MealieBot(commands.Bot):
         super().__init__(
             command_prefix=None,  # No prefix for slash commands
             intents=intents,
-            help_command=None  # We'll implement our own help
+            help_command=None,  # We'll implement our own help
+            # Increase message cache and chunk guilds timeout for better responsiveness
+            max_messages=10000,  # Increase from default 1000
+            chunk_guilds_at_startup=False,  # Don't block startup
+            heartbeat_timeout=60.0,  # Increase from default 30s
         )
 
         self.settings = settings
@@ -49,6 +53,9 @@ class MealieBot(commands.Bot):
 
         # Register commands
         self._register_commands()
+        
+        # Register gateway event handlers
+        self._register_gateway_events()
 
         # Sync slash commands with Discord
         try:
@@ -90,6 +97,21 @@ class MealieBot(commands.Bot):
             logger.debug(f"Received message: '{message.content}' from {message.author}")
             # Only process commands, no automatic link detection
             await self.process_commands(message)
+    
+    def _register_gateway_events(self):
+        """Register Gateway connection event handlers for debugging"""
+        
+        @self.event
+        async def on_connect():
+            logger.info("Bot connected to Discord Gateway")
+        
+        @self.event  
+        async def on_disconnect():
+            logger.warning("Bot disconnected from Discord Gateway")
+        
+        @self.event
+        async def on_resumed():
+            logger.info("Bot resumed Gateway session")
 
     async def _handle_save_recipe_slash(self, interaction: discord.Interaction, url: str):
         """Handle recipe saving for slash commands with AI fallback"""
