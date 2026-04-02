@@ -325,7 +325,5 @@ If you encounter issues or have questions:
 - [x] Systemd service support
 - [ ] Multiple AI providers support
 - [ ] Recipe image processing
-- [ ] Bulk recipe import
 - [ ] Recipe categorization
 - [ ] Web dashboard
-- [ ] Mobile app companion
