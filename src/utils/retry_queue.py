@@ -34,7 +34,7 @@ class RetryTask:
         """Check if task should be retried"""
         return (
             self.attempt < self.max_attempts 
-            and self.status != RetryStatus.SUCCESS
+            and self.status == RetryStatus.PENDING
             and datetime.now() >= self.next_retry
         )
     
@@ -53,6 +53,11 @@ class RetryQueue:
         self.tasks: dict[str, RetryTask] = {}
         self.running = False
         self._processor_task: Optional[asyncio.Task] = None
+        self._retry_handler: Optional[Callable[[RetryTask], Awaitable[tuple[bool, Optional[str]]]]] = None
+
+    def set_retry_handler(self, handler: Callable[[RetryTask], Awaitable[tuple[bool, Optional[str]]]]):
+        """Register coroutine used to execute retry tasks."""
+        self._retry_handler = handler
         
     async def start(self):
         """Start processing queue"""
@@ -106,10 +111,44 @@ class RetryQueue:
                 now = datetime.now()
                 for task in list(self.tasks.values()):
                     if task.should_retry():
+                        if not self._retry_handler:
+                            logger.warning(
+                                f"Task {task.task_id} is ready but no retry handler is configured; delaying 1 minute"
+                            )
+                            task.next_retry = now + timedelta(minutes=1)
+                            continue
+
                         logger.info(f"Task {task.task_id} ready for retry (attempt {task.attempt + 1}/{task.max_attempts})")
-                        # Task will be retried by external handler
-                        # We just mark it as ready
                         task.status = RetryStatus.RETRYING
+
+                        try:
+                            success, error = await self._retry_handler(task)
+                        except Exception as e:
+                            logger.exception(f"Retry handler crashed for task {task.task_id}: {e}")
+                            success, error = False, str(e)
+
+                        attempt_no = task.attempt + 1
+                        if success:
+                            logger.info(
+                                f"Retry attempt result for {task.task_id}: SUCCESS "
+                                f"(attempt {attempt_no}/{task.max_attempts})"
+                            )
+                        else:
+                            logger.warning(
+                                f"Retry attempt result for {task.task_id}: FAILED "
+                                f"(attempt {attempt_no}/{task.max_attempts}) - reason: {error or 'unknown'}"
+                            )
+
+                        if success:
+                            self.update_task_status(task.task_id, RetryStatus.SUCCESS)
+                            self.remove_task(task.task_id)
+                            continue
+
+                        # Failed attempt: either schedule next retry or mark task as permanently failed.
+                        if task.attempt + 1 >= task.max_attempts:
+                            self.update_task_status(task.task_id, RetryStatus.FAILED, error=error)
+                        else:
+                            self.update_task_status(task.task_id, RetryStatus.PENDING, error=error)
                 
                 # Sleep for 30 seconds before next check
                 await asyncio.sleep(30)

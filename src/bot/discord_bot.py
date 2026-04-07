@@ -19,7 +19,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 from config.settings import Settings
 from mealie.client import MealieClient
 from mealie.models import RecipeValidationResult
-from utils.retry_queue import RetryQueue, RetryStatus
+from utils.retry_queue import RetryQueue, RetryStatus, RetryTask
 
 logger = logging.getLogger(__name__)
 
@@ -57,6 +57,7 @@ class MealieBot(commands.Bot):
         await self.mealie_client.connect()
 
         # Start retry queue processor
+        self.retry_queue.set_retry_handler(self._process_retry_task)
         await self.retry_queue.start()
 
         # Register commands
@@ -138,6 +139,89 @@ class MealieBot(commands.Bot):
         @self.event
         async def on_resumed():
             logger.info("Bot resumed Gateway session")
+
+    async def _process_retry_task(self, task: RetryTask) -> tuple[bool, Optional[str]]:
+        """Execute a single retry task from the background retry queue."""
+        try:
+            logger.info(f"Processing retry task {task.task_id} for URL: {task.url}")
+
+            recipe_data = await self.mealie_client.create_recipe_from_url(task.url)
+            if recipe_data.get("status") == "created" and recipe_data.get("slug"):
+                is_valid, validation_reason = await self.mealie_client.validate_recipe_complete(recipe_data["slug"])
+                if is_valid:
+                    await self._notify_retry_result(
+                        task=task,
+                        success=True,
+                        recipe_slug=recipe_data["slug"],
+                        method="Mealie parser",
+                    )
+                    return True, None
+                logger.warning(
+                    f"Retry task {task.task_id}: Mealie recipe incomplete ({validation_reason}), trying AI fallback"
+                )
+
+            ai_recipe_data = await self.mealie_client.parse_recipe_with_ai(task.url)
+            if ai_recipe_data:
+                ai_slug = await self.mealie_client.create_recipe_from_ai_data(task.url, ai_recipe_data)
+                if ai_slug:
+                    await self._notify_retry_result(
+                        task=task,
+                        success=True,
+                        recipe_slug=ai_slug,
+                        method="OpenAI parser",
+                    )
+                    return True, None
+
+            error_message = "Mealie and AI could not parse recipe during retry."
+            await self._notify_retry_result(task=task, success=False, error_message=error_message)
+            return False, error_message
+
+        except Exception as e:
+            logger.error(f"Retry task {task.task_id} failed with exception: {e}")
+            await self._notify_retry_result(task=task, success=False, error_message=str(e))
+            return False, str(e)
+
+    async def _notify_retry_result(
+        self,
+        task: RetryTask,
+        success: bool,
+        recipe_slug: Optional[str] = None,
+        method: Optional[str] = None,
+        error_message: Optional[str] = None,
+    ):
+        """Send retry result to user via DM if possible."""
+        user = self.get_user(task.user_id)
+        if user is None:
+            try:
+                user = await self.fetch_user(task.user_id)
+            except Exception as e:
+                logger.warning(f"Could not fetch user {task.user_id} for retry task {task.task_id}: {e}")
+                return
+
+        attempt_number = task.attempt + 1
+
+        try:
+            if success and recipe_slug:
+                recipe_url = self.mealie_client.get_recipe_url(recipe_slug)
+                message = (
+                    f"✅ **Retry importu zakończony sukcesem**\n"
+                    f"URL: {task.url}\n"
+                    f"Przepis: {recipe_url}\n"
+                    f"Metoda: {method or 'unknown'}\n"
+                    f"Próba: {attempt_number}/{task.max_attempts}"
+                )
+            else:
+                message = (
+                    f"⚠️ **Retry importu nie powiódł się**\n"
+                    f"URL: {task.url}\n"
+                    f"Próba: {attempt_number}/{task.max_attempts}\n"
+                    f"Błąd: {error_message or 'unknown error'}\n"
+                    f"Jeśli są kolejne próby, sprawdź status: `/import_status`"
+                )
+
+            await user.send(message)
+        except Exception as e:
+            logger.warning(f"Could not send retry DM to user {task.user_id} for task {task.task_id}: {e}")
 
     async def _handle_save_recipe_slash(self, interaction: discord.Interaction, url: str, is_retry: bool = False, retry_task_id: Optional[str] = None):
         """Handle recipe saving for slash commands with AI fallback"""
