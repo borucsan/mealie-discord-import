@@ -33,8 +33,11 @@ class MealieBot(commands.Bot):
         intents.message_content = True
         intents.messages = True
 
+        # discord.py still requires a non-None command_prefix even if we mainly use slash commands.
+        command_prefix = settings.discord_command_prefix or commands.when_mentioned
+
         super().__init__(
-            command_prefix=None,  # No prefix for slash commands
+            command_prefix=command_prefix,
             intents=intents,
             help_command=None,  # We'll implement our own help
             # Increase message cache and chunk guilds timeout for better responsiveness
@@ -110,11 +113,15 @@ class MealieBot(commands.Bot):
         # Handle messages - only process commands, no auto-detection
         @self.event
         async def on_message(message):
-            if message.author == self.user:
+            if message.author == self.user or message.author.bot:
                 return
 
-            logger.debug(f"Received message: '{message.content}' from {message.author}")
-            # Only process commands, no automatic link detection
+            # Ignore non-command messages to keep gateway event loop and logs quieter.
+            prefix = self.settings.discord_command_prefix
+            if prefix and not message.content.startswith(prefix):
+                return
+
+            logger.debug(f"Processing command message: '{message.content}' from {message.author}")
             await self.process_commands(message)
     
     def _register_gateway_events(self):
